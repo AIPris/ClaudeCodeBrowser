@@ -663,21 +663,45 @@ function contentScriptCode(script, asAsyncFunction) {
   return asAsyncFunction ? `(async () => {\n${body}\n})()` : `{\n${body}\n}`;
 }
 
-// Page world: the same two forms, evaluated by the page itself so its globals
-// (app objects, editor instances) are reachable. Returned as a JSON copy, since
-// page objects cannot cross into the extension.
+// Page world: the same two forms, run as the page's own code so its globals
+// (app objects, editor instances) are reachable. A page whose
+// Content-Security-Policy forbids eval refuses that before anything runs
+// (issue #32); then the script runs here in the extension's sandbox instead,
+// with a scope where window/document are the page's own and any name the
+// sandbox lacks (ApiClient, CKEDITOR, ...) comes from the page. Built-ins stay
+// the sandbox's own, because page built-ins may not call the script's
+// callbacks ("Permission denied to access object").
+// The eval is the tool's purpose (running the agent's script, like the
+// content-world path does via tabs.executeScript); the server's safety guard
+// gates it (allow_script_execution, read_only).
+// Returned as a JSON copy, since page objects cannot cross into the extension.
 function pageWorldCode(script) {
   return `(async () => {
   const page = window.wrappedJSObject;
   const src = ${JSON.stringify(script)};
+  const needsAsync = (error) => ${NEEDS_ASYNC_WRAPPER}.test(error.message);
+  const run = (evaluate, open, close) => {
+    try {
+      return evaluate(open + '{\\n' + src + '\\n}' + close);
+    } catch (error) {
+      if (!needsAsync(error)) throw error;
+      return evaluate('(async () => { ' + open + '{\\n' + src + '\\n}' + close + ' })()');
+    }
+  };
   let value;
   try {
-    value = page.eval('{\\n' + src + '\\n}');
+    value = run((code) => page.eval(code), '', '');
   } catch (error) {
-    if (!${NEEDS_ASYNC_WRAPPER}.test(error.message)) throw error;
-    value = page.eval('(async () => {\\n' + src + '\\n})()');
+    if (!/blocked by CSP/.test(error.message)) throw error;
+    const scope = new Proxy(Object.create(null), {
+      has: (_, name) => name === 'window' || name === 'document' ||
+        (typeof name === 'string' && !(name in globalThis) && name in page),
+      get: (_, name) => (name === 'window' ? page : name === 'document' ? page.document : page[name]),
+      set: (_, name, v) => { page[name] = v; return true; },
+    });
+    value = run((code) => eval(code), 'with (scope) ', '');
   }
-  const json = page.JSON.stringify(await value);
+  const json = JSON.stringify(await value);
   return json === undefined ? null : JSON.parse(json);
 })()`;
 }
