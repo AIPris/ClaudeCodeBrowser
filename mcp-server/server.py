@@ -273,13 +273,21 @@ MCP_TOOLS: List[MCPTool] = [
     ),
     MCPTool(
         name="browser_execute_script",
-        description="Execute JavaScript code in the browser context.",
+        description=("Execute JavaScript in a tab and return the result: the value of the last expression, "
+                     "or what a top-level `return` gives. Top-level `await` works, const/let are local to each "
+                     "call, and fetch() accepts relative URLs. Results must be JSON-serializable."),
         input_schema={
             "type": "object",
             "required": ["script"],
             "properties": {
                 "script": {"type": "string", "description": "JavaScript code to execute."},
-                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+                "tab_id": {"type": "integer", "description": "Optional tab ID."},
+                "world": {
+                    "type": "string", "enum": ["content", "page"], "default": "content",
+                    "description": ("'content' (default): isolated extension sandbox, safe from the page. "
+                                    "'page': run as the page's own code, to reach its globals (app objects, "
+                                    "editor instances); the result is returned as a JSON copy.")
+                }
             }
         }
     ),
