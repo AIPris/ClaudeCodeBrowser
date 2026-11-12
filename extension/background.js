@@ -669,9 +669,10 @@ async function getAllTabs(options = {}) {
     // window/tab in the user's browser. With dozens of tabs open, querying
     // {} and returning full metadata per tab blows past response size
     // limits. Opt into the wider view explicitly when needed.
-    const currentWindowOnly = options.current_window_only !== false;
-    const includeFavicon = options.include_favicon === true;
-    const urlPattern = options.url_pattern ? new RegExp(options.url_pattern) : null;
+    // The server sends tool arguments in camelCase (camelize_args).
+    const currentWindowOnly = options.currentWindowOnly !== false;
+    const includeFavicon = options.includeFavicon === true;
+    const urlPattern = options.urlPattern ? new RegExp(options.urlPattern) : null;
     const limit = Number.isInteger(options.limit) ? options.limit : 50;
 
     const queryOpts = currentWindowOnly ? { currentWindow: true } : {};
