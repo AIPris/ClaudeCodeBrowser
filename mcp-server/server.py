@@ -798,7 +798,7 @@ MCP_TOOLS: List[MCPTool] = [
     # Safety
     MCPTool(
         name="browser_safety_status",
-        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, and audit log location. Configured in ~/.claudecodebrowser/safety.json.",
+        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, audit log location, and the server and connected Firefox add-on versions. Configured in ~/.claudecodebrowser/safety.json.",
         input_schema={
             "type": "object",
             "properties": {}
@@ -823,6 +823,8 @@ MCP_TOOLS: List[MCPTool] = [
     )
 ]
 
+SERVER_VERSION = '1.4.0'
+
 
 class BrowserConnectionManager:
     """Manages connections to browser extensions."""
@@ -832,6 +834,23 @@ class BrowserConnectionManager:
         self.pending_requests = {}
         self.http_pending_requests = {}
         self.request_counter = 0
+        self.extension_version: Optional[str] = None  # last version the add-on reported
+
+    def version_info(self) -> Dict[str, Any]:
+        return {'server_version': SERVER_VERSION, 'extension_version': self.extension_version}
+
+    def _note_extension_version(self, response: Dict[str, Any]) -> None:
+        """Record the add-on version a response carries (and keep it out of tool
+        results); explain 'Unknown action' errors, which mean the add-on is older
+        than this server."""
+        version = response.pop('extensionVersion', None)
+        if version:
+            self.extension_version = version
+        error = response.get('error')
+        if isinstance(error, str) and error.startswith('Unknown action'):
+            addon = f'add-on is {version}' if version else 'add-on is too old to report its version'
+            response['error'] = (f'{error}. The connected Firefox {addon} and does not support this tool '
+                                 f'(server {SERVER_VERSION}): update the Firefox add-on.')
 
     def register_browser(self, browser_id: str, connection):
         """Register a new browser connection."""
@@ -876,6 +895,7 @@ class BrowserConnectionManager:
 
     def handle_response(self, response: Dict[str, Any]):
         """Handle a response from the browser."""
+        self._note_extension_version(response)
         request_id = response.get('requestId')
         if request_id and request_id in self.pending_requests:
             future = self.pending_requests[request_id]
@@ -925,7 +945,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
-                'version': '1.4.0',
+                'version': SERVER_VERSION,
+                'extension_version': connection_manager.extension_version,
                 'browsers_connected': len(connection_manager.browser_connections)
             })
 
@@ -1053,7 +1074,7 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Handled entirely server-side, no browser round-trip needed.
         if tool_name == 'browser_safety_status':
-            return guard.status()
+            return {**guard.status(), **connection_manager.version_info()}
         if tool_name == 'browser_run_workflow':
             return self._run_workflow(arguments)
         if tool_name == 'browser_audit_page':
