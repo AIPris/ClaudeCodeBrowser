@@ -14,13 +14,23 @@ import pytest
 
 @pytest.fixture
 def files(temp_home):
-    docs = temp_home / "uploads"
-    docs.mkdir(exist_ok=True)
+    docs = temp_home / "Documents" / "uploads"
+    docs.mkdir(parents=True, exist_ok=True)
     (docs / "cover.png").write_bytes(b"\x89PNG fake image")
     (docs / "model.zip").write_bytes(b"PK zip bytes")
     hidden = temp_home / ".ssh"
     hidden.mkdir(exist_ok=True)
     (hidden / "id_rsa").write_text("secret")
+    profile = temp_home / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles"
+    profile.mkdir(parents=True, exist_ok=True)
+    (profile / "cookies.sqlite").write_bytes(b"cookies")
+    library = temp_home / "Desktop" / "Library"
+    library.mkdir(parents=True, exist_ok=True)
+    (library / "Keychain.db").write_bytes(b"keys")
+    (docs / ".env").write_text("API_KEY=secret")
+    (docs / ".git").mkdir(exist_ok=True)
+    (docs / ".git" / "config").write_text("[core]")
+    (temp_home / "notes.txt").write_text("loose file in home")
     return docs
 
 
@@ -32,22 +42,30 @@ def guard(server):
 
 # --- path policy ------------------------------------------------------------
 
-def test_files_in_the_home_folder_are_allowed(guard, files):
+def test_files_in_the_content_folders_are_allowed(guard, files):
     resolved, denial = guard.check_upload_paths([str(files / "cover.png"), str(files / "model.zip")])
     assert denial is None
     assert [p.name for p in resolved] == ["cover.png", "model.zip"]
 
 
 @pytest.mark.parametrize("make_path, reason", [
-    (lambda home, docs: home / ".ssh" / "id_rsa", "hidden"),
-    (lambda home, docs: home / ".claudecodebrowser" / "api_token", "hidden"),
+    (lambda home, docs: home / ".ssh" / "id_rsa", "outside"),
+    (lambda home, docs: home / ".claudecodebrowser" / "api_token", "outside"),
+    (lambda home, docs: docs / ".env", "hidden"),
+    (lambda home, docs: docs / ".git" / "config", "hidden"),
     (lambda home, docs: docs / "missing.png", "not found"),
     (lambda home, docs: docs, "not a file"),
     (lambda home, docs: home.parent / "elsewhere.txt", "outside"),
+    # Home itself is not an upload folder by default: AppData holds browser
+    # profiles (cookies, logins) and other apps' credentials.
+    (lambda home, docs: home / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles" / "cookies.sqlite", "outside"),
+    (lambda home, docs: home / "notes.txt", "outside"),
+    # ... and app-data folders are refused even inside an allowed folder.
+    (lambda home, docs: home / "Desktop" / "Library" / "Keychain.db", "application data"),
 ])
 def test_unsafe_or_invalid_paths_are_refused(guard, files, temp_home, make_path, reason):
     target = make_path(temp_home, files)
-    if reason == "outside":
+    if reason == "outside" and not target.exists():
         target.write_text("x")
     resolved, denial = guard.check_upload_paths([str(target)])
     assert resolved is None
@@ -125,7 +143,7 @@ def test_upload_tool_sends_urls_not_bytes_and_cleans_up(server, files, monkeypat
 def test_upload_tool_reports_policy_denials(server, files, temp_home):
     handler = server.MCPHTTPHandler.__new__(server.MCPHTTPHandler)
     result = handler.execute_tool("browser_upload_file", {
-        "selector": "input[type=file]", "paths": [str(temp_home / ".ssh" / "id_rsa")]})
+        "selector": "input[type=file]", "paths": [str(files / ".env")]})
     assert result["success"] is False
     assert "hidden" in result["error"]
 

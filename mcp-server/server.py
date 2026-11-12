@@ -309,8 +309,9 @@ MCP_TOOLS: List[MCPTool] = [
         name="browser_upload_file",
         description=("Attach local files to an <input type=\"file\"> (the input itself, even if hidden; "
                      "drop zones usually have one). Fires input/change like a real file pick. Files must be "
-                     "inside upload_allowed_dirs from safety.json (default: the home folder); hidden files "
-                     "and folders are refused, and the total is capped by max_upload_mb."),
+                     "inside upload_allowed_dirs from safety.json (default: Desktop, Documents, Downloads, "
+                     "Pictures); hidden and application-data folders are refused, and the total is "
+                     "capped by max_upload_mb."),
         input_schema={
             "type": "object",
             "required": ["selector", "paths"],

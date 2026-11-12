@@ -61,6 +61,10 @@ _AUDIT_FILE = Path.home() / '.claudecodebrowser' / 'logs' / 'audit.jsonl'
 # data:, chrome:, resource:, moz-extension:, about:config ...) is refused.
 _SAFE_URL_RE = re.compile(r'^(https?://|about:blank$)', re.IGNORECASE)
 
+# Folders holding application data (browser profiles, keychains, app tokens);
+# browser_upload_file refuses anything inside them.
+_APP_DATA_DIRS = {'appdata', 'library', 'application support'}
+
 DEFAULT_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "read_only": False,
@@ -78,10 +82,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "allow_password_typing": False,
     "max_actions_per_minute": 120,
     "audit_log": True,
-    # browser_upload_file may only send files from these folders ("~" = home).
-    # Hidden files and folders (names starting with ".", e.g. ~/.ssh) are
-    # always refused, as is anything over max_upload_mb in total.
-    "upload_allowed_dirs": ["~"],
+    # browser_upload_file may only send files from these folders. Not the whole
+    # home folder: it holds AppData / Library (browser profiles with cookies and
+    # logins, other apps' credentials). Hidden files and folders (".ssh") and
+    # app-data folders are refused even inside these, as is anything over
+    # max_upload_mb in total.
+    "upload_allowed_dirs": ["~/Desktop", "~/Documents", "~/Downloads", "~/Pictures"],
     "max_upload_mb": 100,
     # Regexes matched against target URLs. Empty allowlist = allow everything
     # that is not blocked.
@@ -228,7 +234,8 @@ class SafetyGuard:
         """
         if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
             return None, self._deny('upload_invalid', 'paths must be a non-empty list of file paths.')
-        allowed = [Path(os.path.expanduser(d)).resolve() for d in self.config.get('upload_allowed_dirs', ['~'])]
+        allowed = [Path(os.path.expanduser(d)).resolve()
+                   for d in self.config.get('upload_allowed_dirs', DEFAULT_CONFIG['upload_allowed_dirs'])]
         resolved: List[Path] = []
         for raw in paths:
             path = Path(os.path.expanduser(raw)).resolve()
@@ -237,8 +244,12 @@ class SafetyGuard:
                 return None, self._deny('upload_outside_allowed',
                                         f'{raw} is outside the upload folders {[str(d) for d in allowed]} '
                                         f'(upload_allowed_dirs in safety.json).')
-            if any(part.startswith('.') for part in path.relative_to(base).parts):
+            parts = path.relative_to(base).parts
+            if any(part.startswith('.') for part in parts):
                 return None, self._deny('upload_hidden', f'{raw} refused: hidden files and folders are never uploaded.')
+            if any(part.lower() in _APP_DATA_DIRS for part in parts):
+                return None, self._deny('upload_app_data',
+                                        f'{raw} refused: application data folders (AppData, Library) are never uploaded.')
             if not path.exists():
                 return None, self._deny('upload_missing', f'{raw}: file not found.')
             if not path.is_file():
