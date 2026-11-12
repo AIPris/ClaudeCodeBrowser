@@ -337,19 +337,26 @@ async function takeScreenshot(tabId, options = {}) {
     }
 
     try {
-      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, {
-        format: options.format || "png",
-        quality: options.quality || 90
-      });
+      const imageOptions = { format: options.format || "png", quality: options.quality || 90 };
 
-      // If full page screenshot requested, use content script
       if (options.fullPage) {
-        const fullPageData = await browser.tabs.sendMessage(targetTab.id, {
-          action: "captureFullPage",
-          format: options.format || "png"
+        // The content script reports the document size; Firefox's captureTab
+        // can capture a rect larger than the viewport, so no scroll-and-stitch.
+        const page = await browser.tabs.sendMessage(targetTab.id, { action: "captureFullPage" });
+        const fullPageUrl = await browser.tabs.captureTab(targetTab.id, {
+          ...imageOptions,
+          rect: { x: 0, y: 0, width: page.scrollWidth, height: page.scrollHeight }
         });
-        return { success: true, data: fullPageData, type: "fullPage" };
+        return {
+          success: true,
+          data: fullPageUrl,
+          type: "fullPage",
+          tab: { id: targetTab.id, url: targetTab.url, title: targetTab.title },
+          wasFocused: needsFocus
+        };
       }
+
+      const dataUrl = await browser.tabs.captureVisibleTab(targetTab.windowId, imageOptions);
 
       return {
         success: true,
