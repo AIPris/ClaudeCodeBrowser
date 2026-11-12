@@ -228,7 +228,7 @@ async function handleCommand(message) {
         result = await focusTab(tabId);
         break;
       case "getTabInfo":
-        result = await getTabInfo(tabId);
+        result = await getTabInfo(tabId, data);
         break;
       case "findTabs":
         result = await findTabs(data);
@@ -304,11 +304,13 @@ async function handleCommand(message) {
     result = { success: false, error: error.message };
   }
 
-  // Send result back to native host
+  // Send result back to native host. The version lets the server explain
+  // "Unknown action" errors from an add-on older than the server.
   if (nativePort && message.requestId) {
     nativePort.postMessage({
       requestId: message.requestId,
-      ...result
+      ...result,
+      extensionVersion: browser.runtime.getManifest().version
     });
   }
 
@@ -615,14 +617,57 @@ async function getElements(tabId, data) {
   }
 }
 
+// Syntax errors (Firefox / V8 wording) for a top-level `return` or `await`.
+const NEEDS_ASYNC_WRAPPER = /return not in function|Illegal return|await is only valid/;
+
+// Content-script world. The script runs in its own block, so const/let stay local
+// to this call and the last expression is still the result; a script that uses
+// top-level return/await runs as an async function instead. The script sits in
+// an inner block so it may declare its own `fetch`.
+function contentScriptCode(script, asAsyncFunction) {
+  const resolveFetch = "const fetch = (input, init) => window.fetch(" +
+    "typeof input === 'string' ? new URL(input, location.href).href : input, init);";
+  const body = `${resolveFetch}\n{\n${script}\n}`;
+  return asAsyncFunction ? `(async () => {\n${body}\n})()` : `{\n${body}\n}`;
+}
+
+// Page world: the same two forms, evaluated by the page itself so its globals
+// (app objects, editor instances) are reachable. Returned as a JSON copy, since
+// page objects cannot cross into the extension.
+function pageWorldCode(script) {
+  return `(async () => {
+  const page = window.wrappedJSObject;
+  const src = ${JSON.stringify(script)};
+  let value;
+  try {
+    value = page.eval('{\\n' + src + '\\n}');
+  } catch (error) {
+    if (!${NEEDS_ASYNC_WRAPPER}.test(error.message)) throw error;
+    value = page.eval('(async () => {\\n' + src + '\\n})()');
+  }
+  const json = page.JSON.stringify(await value);
+  return json === undefined ? null : JSON.parse(json);
+})()`;
+}
+
 // Execute arbitrary script
 async function executeScript(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const run = (code) => browser.tabs.executeScript(tab.id, { code });
 
-    const result = await browser.tabs.executeScript(tab.id, {
-      code: data.script
-    });
+    let result;
+    if (data.world === "page") {
+      result = await run(pageWorldCode(data.script));
+    } else {
+      try {
+        result = await run(contentScriptCode(data.script, false));
+      } catch (error) {
+        // A syntax error means nothing ran yet, so retrying is safe.
+        if (!NEEDS_ASYNC_WRAPPER.test(error.message)) throw error;
+        result = await run(contentScriptCode(data.script, true));
+      }
+    }
 
     return { success: true, result: result[0] };
   } catch (error) {
@@ -669,9 +714,10 @@ async function getAllTabs(options = {}) {
     // window/tab in the user's browser. With dozens of tabs open, querying
     // {} and returning full metadata per tab blows past response size
     // limits. Opt into the wider view explicitly when needed.
-    const currentWindowOnly = options.current_window_only !== false;
-    const includeFavicon = options.include_favicon === true;
-    const urlPattern = options.url_pattern ? new RegExp(options.url_pattern) : null;
+    // The server sends tool arguments in camelCase (camelize_args).
+    const currentWindowOnly = options.currentWindowOnly !== false;
+    const includeFavicon = options.includeFavicon === true;
+    const urlPattern = options.urlPattern ? new RegExp(options.urlPattern) : null;
     const limit = Number.isInteger(options.limit) ? options.limit : 50;
 
     const queryOpts = currentWindowOnly ? { currentWindow: true } : {};
@@ -727,7 +773,7 @@ async function getAllTabs(options = {}) {
 }
 
 // Get detailed info about a specific tab
-async function getTabInfo(tabId) {
+async function getTabInfo(tabId, options = {}) {
   try {
     const tab = await browser.tabs.get(tabId);
     const win = await browser.windows.get(tab.windowId);
@@ -754,7 +800,8 @@ async function getTabInfo(tabId) {
         status: tab.status,
         discarded: tab.discarded,
         audible: tab.audible,
-        favIconUrl: tab.favIconUrl
+        // Often a multi-KB data: URI, so only on request (like get_tabs).
+        ...(options.includeFavicon === true ? { favIconUrl: tab.favIconUrl } : {})
       },
       window: {
         id: win.id,

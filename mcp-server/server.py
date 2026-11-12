@@ -273,13 +273,21 @@ MCP_TOOLS: List[MCPTool] = [
     ),
     MCPTool(
         name="browser_execute_script",
-        description="Execute JavaScript code in the browser context.",
+        description=("Execute JavaScript in a tab and return the result: the value of the last expression, "
+                     "or what a top-level `return` gives. Top-level `await` works, const/let are local to each "
+                     "call, and fetch() accepts relative URLs. Results must be JSON-serializable."),
         input_schema={
             "type": "object",
             "required": ["script"],
             "properties": {
                 "script": {"type": "string", "description": "JavaScript code to execute."},
-                "tab_id": {"type": "integer", "description": "Optional tab ID."}
+                "tab_id": {"type": "integer", "description": "Optional tab ID."},
+                "world": {
+                    "type": "string", "enum": ["content", "page"], "default": "content",
+                    "description": ("'content' (default): isolated extension sandbox, safe from the page. "
+                                    "'page': run as the page's own code, to reach its globals (app objects, "
+                                    "editor instances); the result is returned as a JSON copy.")
+                }
             }
         }
     ),
@@ -303,7 +311,9 @@ MCP_TOOLS: List[MCPTool] = [
             "type": "object",
             "required": ["tab_id"],
             "properties": {
-                "tab_id": {"type": "integer", "description": "ID of the tab to get info for."}
+                "tab_id": {"type": "integer", "description": "ID of the tab to get info for."},
+                "include_favicon": {"type": "boolean", "default": False,
+                                    "description": "Include favIconUrl (often a large base64 data URI)."}
             }
         }
     ),
@@ -788,7 +798,7 @@ MCP_TOOLS: List[MCPTool] = [
     # Safety
     MCPTool(
         name="browser_safety_status",
-        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, and audit log location. Configured in ~/.claudecodebrowser/safety.json.",
+        description="Show the active safety guard policy: read-only mode, script toggle, protected/blocked/allowed URL patterns, rate-limit state, audit log location, and the server and connected Firefox add-on versions. Configured in ~/.claudecodebrowser/safety.json.",
         input_schema={
             "type": "object",
             "properties": {}
@@ -813,6 +823,8 @@ MCP_TOOLS: List[MCPTool] = [
     )
 ]
 
+SERVER_VERSION = '1.4.0'
+
 
 # How long a tool call waits for the browser to answer. Prompts that wait on a
 # human (approval, captcha solving) get more time.
@@ -830,7 +842,24 @@ class BrowserConnectionManager:
         self.pending_requests = {}
         self.http_pending_requests = {}
         self.request_counter = 0
+        self.extension_version: Optional[str] = None  # last version the add-on reported
         self.last_poll: Optional[float] = None  # time.monotonic() of the last native-host poll
+
+    def version_info(self) -> Dict[str, Any]:
+        return {'server_version': SERVER_VERSION, 'extension_version': self.extension_version}
+
+    def _note_extension_version(self, response: Dict[str, Any]) -> None:
+        """Record the add-on version a response carries (and keep it out of tool
+        results); explain 'Unknown action' errors, which mean the add-on is older
+        than this server."""
+        version = response.pop('extensionVersion', None)
+        if version:
+            self.extension_version = version
+        error = response.get('error')
+        if isinstance(error, str) and error.startswith('Unknown action'):
+            addon = f'add-on is {version}' if version else 'add-on is too old to report its version'
+            response['error'] = (f'{error}. The connected Firefox {addon} and does not support this tool '
+                                 f'(server {SERVER_VERSION}): update the Firefox add-on.')
 
     def note_poll(self) -> None:
         self.last_poll = time.monotonic()
@@ -890,6 +919,7 @@ class BrowserConnectionManager:
 
     def handle_response(self, response: Dict[str, Any]):
         """Handle a response from the browser."""
+        self._note_extension_version(response)
         request_id = response.get('requestId')
         if request_id and request_id in self.pending_requests:
             future = self.pending_requests[request_id]
@@ -939,7 +969,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             self.send_json_response({
                 'status': 'ok',
                 'timestamp': datetime.now().isoformat(),
-                'version': '1.4.0',
+                'version': SERVER_VERSION,
+                'extension_version': connection_manager.extension_version,
                 'browsers_connected': len(connection_manager.browser_connections),
                 **connection_manager.connection_info()
             })
@@ -1069,7 +1100,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
 
         # Handled entirely server-side, no browser round-trip needed.
         if tool_name == 'browser_safety_status':
-            return {**guard.status(), **connection_manager.connection_info()}
+            return {**guard.status(), **connection_manager.version_info(),
+                    **connection_manager.connection_info()}
         if tool_name == 'browser_run_workflow':
             return self._run_workflow(arguments)
         if tool_name == 'browser_audit_page':
