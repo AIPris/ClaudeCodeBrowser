@@ -196,6 +196,10 @@ def handle_tools_call(msg):
     }
 
 def main():
+    # MCP messages are UTF-8, but Python decodes pipes with the locale's code
+    # page (cp1252 on Windows), which garbles any non-ASCII argument.
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
     log("Starting MCP stdio wrapper")
 
     # Start HTTP server
