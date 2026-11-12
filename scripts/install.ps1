@@ -85,7 +85,7 @@ $Manifest = @{
     description = "ClaudeCodeBrowser Native Messaging Host"
     path = $HostBat
     type = "stdio"
-    allowed_extensions = @("claudecodebrowser@ligandal.com")
+    allowed_extensions = @("claudecodebrowser@aipris", "claudecodebrowser@ligandal.com")
 }
 $Manifest | ConvertTo-Json | Set-Content -Path $ManifestPath -Encoding UTF8
 

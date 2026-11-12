@@ -107,6 +107,7 @@ cat > "$FIREFOX_NATIVE_MANIFESTS_DIR/claudecodebrowser.json" << EOF
   "path": "$NATIVE_HOST_PATH",
   "type": "stdio",
   "allowed_extensions": [
+    "claudecodebrowser@aipris",
     "claudecodebrowser@ligandal.com"
   ]
 }
