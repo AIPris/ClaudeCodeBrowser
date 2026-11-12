@@ -344,7 +344,7 @@ async function takeScreenshot(tabId, options = {}) {
       if (options.fullPage) {
         // The content script reports the document size; Firefox's captureTab
         // can capture a rect larger than the viewport, so no scroll-and-stitch.
-        const page = await browser.tabs.sendMessage(targetTab.id, { action: "captureFullPage" });
+        const page = await messageTopFrame(targetTab.id, { action: "captureFullPage" });
         const fullPageUrl = await browser.tabs.captureTab(targetTab.id, {
           ...imageOptions,
           rect: { x: 0, y: 0, width: page.scrollWidth, height: page.scrollHeight }
@@ -496,10 +496,17 @@ async function navigateHistory(tabId, direction) {
 }
 
 // Generic helper to send message to content script
+// content.js runs in every frame (all_frames), and a message without a frameId
+// reaches all of them: each frame would run the command and the first reply
+// would win. Commands from Claude target the page itself, i.e. the top frame.
+function messageTopFrame(tabId, message) {
+  return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
+}
+
 async function sendToContentScript(tabId, message) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
-    const result = await browser.tabs.sendMessage(tab.id, message);
+    const result = await messageTopFrame(tab.id, message);
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };
@@ -511,7 +518,7 @@ async function performClick(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "click",
       ...data
     });
@@ -527,7 +534,7 @@ async function performType(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "type",
       ...data
     });
@@ -543,7 +550,7 @@ async function performScroll(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "scroll",
       ...data
     });
@@ -587,7 +594,7 @@ async function getPageInfo(tabId) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "getPageInfo"
     });
 
@@ -606,7 +613,7 @@ async function getElements(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "getElements",
       ...data
     });
@@ -680,7 +687,7 @@ async function highlightElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "highlight",
       ...data
     });
@@ -696,7 +703,7 @@ async function waitForElement(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
 
-    const result = await browser.tabs.sendMessage(tab.id, {
+    const result = await messageTopFrame(tab.id, {
       action: "waitForElement",
       ...data
     });
@@ -781,7 +788,7 @@ async function getTabInfo(tabId, options = {}) {
     // Try to get page info from content script
     let pageInfo = null;
     try {
-      pageInfo = await browser.tabs.sendMessage(tabId, { action: "getPageInfo" });
+      pageInfo = await messageTopFrame(tabId, { action: "getPageInfo" });
     } catch (e) {
       // Content script may not be loaded
       pageInfo = { error: "Content script not available" };
@@ -1053,11 +1060,12 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
       }
     });
   } else if (info.menuItemId === "claude-inspect") {
+    // The user right-clicked in a specific frame; inspect there.
     browser.tabs.sendMessage(tab.id, {
       action: "inspectElement",
       x: info.pageX,
       y: info.pageY
-    });
+    }, { frameId: info.frameId ?? 0 });
   }
 });
 
