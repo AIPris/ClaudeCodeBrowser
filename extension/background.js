@@ -228,7 +228,7 @@ async function handleCommand(message) {
         result = await focusTab(tabId);
         break;
       case "getTabInfo":
-        result = await getTabInfo(tabId);
+        result = await getTabInfo(tabId, data);
         break;
       case "findTabs":
         result = await findTabs(data);
@@ -728,7 +728,7 @@ async function getAllTabs(options = {}) {
 }
 
 // Get detailed info about a specific tab
-async function getTabInfo(tabId) {
+async function getTabInfo(tabId, options = {}) {
   try {
     const tab = await browser.tabs.get(tabId);
     const win = await browser.windows.get(tab.windowId);
@@ -755,7 +755,8 @@ async function getTabInfo(tabId) {
         status: tab.status,
         discarded: tab.discarded,
         audible: tab.audible,
-        favIconUrl: tab.favIconUrl
+        // Often a multi-KB data: URI, so only on request (like get_tabs).
+        ...(options.includeFavicon === true ? { favIconUrl: tab.favIconUrl } : {})
       },
       window: {
         id: win.id,
