@@ -14,15 +14,25 @@ function fakeTab({ csp = false } = {}) {
   const fetched = [];
   // The page's own global object, as window.wrappedJSObject gives it.
   const page = vm.createContext({ pageGlobal: 42, JSON });
+  page.document = { title: 'Page title', marker: 'page document' };
+  page.eval = (src) => vm.runInContext(src, page); // window.wrappedJSObject.eval runs code as the page
   if (csp) {
     // A Content-Security-Policy without 'unsafe-eval' (issue #32).
     page.eval = () => { throw new Error('call to eval() blocked by CSP'); };
+    // Firefox refuses to let page built-ins call the extension's functions
+    // ("Permission denied to access object"), so they must not be used here.
+    for (const name of ['Promise', 'setTimeout', 'Array']) {
+      page[name] = () => { throw new Error(`Permission denied to access object (page ${name})`); };
+    }
   }
   const sandbox = vm.createContext({
     location: { href: TAB.url },
     URL,
     Promise,
     JSON,
+    Array,
+    setTimeout,
+    document: { title: 'Xray view of the document' },
     window: {
       fetch: async (url) => { fetched.push(url); return { status: 200, json: async () => ({ ok: true }) }; },
       wrappedJSObject: page,
@@ -86,6 +96,13 @@ test('world "page" works on pages whose CSP forbids eval', async () => {
   assert.deepEqual(await run(bg, 'pageGlobal * 2', { world: 'page' }), { success: true, result: 84 });
   assert.deepEqual(await run(bg, 'const v = await Promise.resolve(1); return pageGlobal + v;', { world: 'page' }),
     { success: true, result: 43 });
+  // Callbacks keep working: built-ins are the sandbox's own, not the page's.
+  const callbacks = 'const t = await new Promise((r) => setTimeout(() => r(document.marker), 0));' +
+    'return Array.from([pageGlobal], (n) => `${t} ${n}`);';
+  assert.deepEqual(await run(bg, callbacks, { world: 'page' }), { success: true, result: ['page document 42'] });
+  // window and document are the page's own.
+  assert.deepEqual(await run(bg, '[window.pageGlobal, document.title]', { world: 'page' }),
+    { success: true, result: [42, 'Page title'] });
 });
 
 test('world "page" reaches page globals and returns JSON-safe values', async () => {
