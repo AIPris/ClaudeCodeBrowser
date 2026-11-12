@@ -10,9 +10,14 @@ const TAB = { id: 5, windowId: 1, url: 'http://127.0.0.1:8799/index.html' };
 // Stands in for one tab: a content-script sandbox that keeps its globals between
 // executeScript calls (as Firefox does), plus the page's own JS world behind
 // window.wrappedJSObject.
-function fakeTab() {
+function fakeTab({ csp = false } = {}) {
   const fetched = [];
+  // The page's own global object, as window.wrappedJSObject gives it.
   const page = vm.createContext({ pageGlobal: 42, JSON });
+  if (csp) {
+    // A Content-Security-Policy without 'unsafe-eval' (issue #32).
+    page.eval = () => { throw new Error('call to eval() blocked by CSP'); };
+  }
   const sandbox = vm.createContext({
     location: { href: TAB.url },
     URL,
@@ -20,7 +25,7 @@ function fakeTab() {
     JSON,
     window: {
       fetch: async (url) => { fetched.push(url); return { status: 200, json: async () => ({ ok: true }) }; },
-      wrappedJSObject: { eval: (src) => vm.runInContext(src, page), JSON: page.JSON },
+      wrappedJSObject: page,
     },
   });
   sandbox.window.location = sandbox.location;
@@ -74,6 +79,13 @@ test('real errors are still reported', async () => {
   const result = await run(bg, 'nope.missing');
   assert.equal(result.success, false);
   assert.match(result.error, /nope is not defined/);
+});
+
+test('world "page" works on pages whose CSP forbids eval', async () => {
+  const bg = loadBackgroundScript(fakeTab({ csp: true }));
+  assert.deepEqual(await run(bg, 'pageGlobal * 2', { world: 'page' }), { success: true, result: 84 });
+  assert.deepEqual(await run(bg, 'const v = await Promise.resolve(1); return pageGlobal + v;', { world: 'page' }),
+    { success: true, result: 43 });
 });
 
 test('world "page" reaches page globals and returns JSON-safe values', async () => {

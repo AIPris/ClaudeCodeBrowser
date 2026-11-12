@@ -663,21 +663,26 @@ function contentScriptCode(script, asAsyncFunction) {
   return asAsyncFunction ? `(async () => {\n${body}\n})()` : `{\n${body}\n}`;
 }
 
-// Page world: the same two forms, evaluated by the page itself so its globals
-// (app objects, editor instances) are reachable. Returned as a JSON copy, since
-// page objects cannot cross into the extension.
+// Page world: the same two forms, with the page's real window as the scope, so
+// bare names reach its globals (app objects, editor instances). The code is
+// evaluated here in the extension's sandbox, not by the page: a page whose
+// Content-Security-Policy forbids eval would refuse that (issue #32).
+// The eval is the tool's purpose (running the agent's script, like the
+// content-world path does via tabs.executeScript); the server's safety guard
+// gates it (allow_script_execution, read_only).
+// Returned as a JSON copy, since page objects cannot cross into the extension.
 function pageWorldCode(script) {
   return `(async () => {
   const page = window.wrappedJSObject;
   const src = ${JSON.stringify(script)};
   let value;
   try {
-    value = page.eval('{\\n' + src + '\\n}');
+    value = eval('with (page) {\\n' + src + '\\n}');
   } catch (error) {
     if (!${NEEDS_ASYNC_WRAPPER}.test(error.message)) throw error;
-    value = page.eval('(async () => {\\n' + src + '\\n})()');
+    value = eval('(async () => { with (page) {\\n' + src + '\\n} })()');
   }
-  const json = page.JSON.stringify(await value);
+  const json = JSON.stringify(await value);
   return json === undefined ? null : JSON.parse(json);
 })()`;
 }
