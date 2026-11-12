@@ -615,14 +615,57 @@ async function getElements(tabId, data) {
   }
 }
 
+// Syntax errors (Firefox / V8 wording) for a top-level `return` or `await`.
+const NEEDS_ASYNC_WRAPPER = /return not in function|Illegal return|await is only valid/;
+
+// Content-script world. The script runs in its own block, so const/let stay local
+// to this call and the last expression is still the result; a script that uses
+// top-level return/await runs as an async function instead. The script sits in
+// an inner block so it may declare its own `fetch`.
+function contentScriptCode(script, asAsyncFunction) {
+  const resolveFetch = "const fetch = (input, init) => window.fetch(" +
+    "typeof input === 'string' ? new URL(input, location.href).href : input, init);";
+  const body = `${resolveFetch}\n{\n${script}\n}`;
+  return asAsyncFunction ? `(async () => {\n${body}\n})()` : `{\n${body}\n}`;
+}
+
+// Page world: the same two forms, evaluated by the page itself so its globals
+// (app objects, editor instances) are reachable. Returned as a JSON copy, since
+// page objects cannot cross into the extension.
+function pageWorldCode(script) {
+  return `(async () => {
+  const page = window.wrappedJSObject;
+  const src = ${JSON.stringify(script)};
+  let value;
+  try {
+    value = page.eval('{\\n' + src + '\\n}');
+  } catch (error) {
+    if (!${NEEDS_ASYNC_WRAPPER}.test(error.message)) throw error;
+    value = page.eval('(async () => {\\n' + src + '\\n})()');
+  }
+  const json = page.JSON.stringify(await value);
+  return json === undefined ? null : JSON.parse(json);
+})()`;
+}
+
 // Execute arbitrary script
 async function executeScript(tabId, data) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const run = (code) => browser.tabs.executeScript(tab.id, { code });
 
-    const result = await browser.tabs.executeScript(tab.id, {
-      code: data.script
-    });
+    let result;
+    if (data.world === "page") {
+      result = await run(pageWorldCode(data.script));
+    } else {
+      try {
+        result = await run(contentScriptCode(data.script, false));
+      } catch (error) {
+        // A syntax error means nothing ran yet, so retrying is safe.
+        if (!NEEDS_ASYNC_WRAPPER.test(error.message)) throw error;
+        result = await run(contentScriptCode(data.script, true));
+      }
+    }
 
     return { success: true, result: result[0] };
   } catch (error) {
