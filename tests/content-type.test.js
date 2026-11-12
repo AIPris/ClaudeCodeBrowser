@@ -54,3 +54,17 @@ test('short texts keep the requested speed', async () => {
 
   assert.ok(waited >= 250, `only waited ${waited} ms`);
 });
+
+test('in a background tab typing does not pause between characters', async () => {
+  // Firefox clamps timers in background tabs to >= 1 s, so any per-character
+  // pause typed one character per second there (live: 30 characters in 30 s).
+  const { window, send } = loadContentScript('<input id="q">');
+  Object.defineProperty(window.document, 'hidden', { value: true });
+  const pauses = [];
+  window.setTimeout = (fn, ms = 0) => { pauses.push(ms); fn(); return 0; };
+
+  await send({ action: 'type', selector: '#q', text: 'x'.repeat(200) });
+
+  assert.equal(window.document.getElementById('q').value, 'x'.repeat(200));
+  assert.ok(pauses.length < 5, `${pauses.length} timer waits for 200 characters`);
+});
