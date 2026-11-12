@@ -91,6 +91,10 @@ def deploy_components():
 
 
 def build_and_sign(addon_id, version):
+    signed = ARTIFACTS / f"claudecodebrowser-{version}-signed.xpi"
+    if signed.exists():  # Mozilla signs each version only once; reuse it on a re-run
+        print(f"Using the already signed {signed.name}")
+        return signed
     run([shutil.which("npx") or "npx", "--yes", "web-ext@8.3.0", "build", "-s", "extension",
          "-a", str(ARTIFACTS), "--overwrite-dest"], stdout=subprocess.DEVNULL)
     zip_path = ARTIFACTS / f"claudecodebrowser-{version}.zip"
@@ -98,17 +102,67 @@ def build_and_sign(addon_id, version):
     return sign_addon.sign(zip_path, addon_id, sign_addon.load_credentials(REPO / ".env.amo"), ARTIFACTS)
 
 
-def install(xpi, addon_name, addon_id, version):
-    subprocess.Popen([firefox_path(), str(xpi)])
-    run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-         str(REPO / "scripts" / "confirm-addon-install.ps1"), "-AddonName", addon_name])
-    deadline = time.monotonic() + 30
+def mcp_call(tool, arguments):
+    """Call a browser tool through the local MCP server (same token as the wrapper)."""
+    token = (INSTALL_DIR / "api_token").read_text().strip()
+    request = urllib.request.Request("http://127.0.0.1:8765/mcp/call", method="POST",
+                                     data=json.dumps({"name": tool, "arguments": arguments}).encode(),
+                                     headers={"Content-Type": "application/json", "X-API-Key": token})
+    with urllib.request.urlopen(request, timeout=30) as resp:
+        return json.loads(resp.read())
+
+
+def close_xpi_tabs():
+    """Firefox opens an empty tab for each add-on file it installs; close them."""
+    try:
+        tabs = mcp_call("browser_find_tabs", {"title": ".xpi"}).get("tabs", [])
+        for tab in tabs:
+            mcp_call("browser_close_tab", {"tab_id": tab["id"]})
+        if tabs:
+            print(f"Closed {len(tabs)} leftover install tab(s).")
+        return len(tabs)
+    except OSError as e:
+        print(f"Could not close the install tab(s): {e}")
+        return 0
+
+
+def wait_for_version(addon_id, version, seconds):
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         if version in installed_versions(addon_id):
+            return True
+        time.sleep(1)
+    return False
+
+
+def open_in_firefox(xpi):
+    if close_xpi_tabs():  # closing a tab cancels an install still waiting there
+        time.sleep(2)     # let those prompts go away before the new one opens
+    subprocess.Popen([firefox_path(), str(xpi)])
+
+
+def install(xpi, addon_name, addon_id, version):
+    confirm = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+               str(REPO / "scripts" / "confirm-addon-install.ps1"), "-AddonName", addon_name, "-TimeoutSeconds", "15"]
+    # Verify instead of trusting the click, and open the file again when
+    # Firefox showed no prompt for it.
+    for _ in range(3):
+        open_in_firefox(xpi)
+        if subprocess.run(confirm, cwd=REPO).returncode == 0 and wait_for_version(addon_id, version, 20):
             print(f"Firefox reports {addon_name} {version} installed.")
             return
-        time.sleep(1)
-    raise RuntimeError(f"Firefox did not report {version} within 30 s.")
+    raise RuntimeError(f"Firefox did not report {version} as installed.")
+
+
+def wait_for_server(seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(HEALTH_URL, timeout=3) as resp:
+                return json.loads(resp.read())
+        except OSError:
+            time.sleep(3)
+    return None
 
 
 def restart_server():
@@ -117,16 +171,10 @@ def restart_server():
               "? { $_.CommandLine -match 'server\\.py' -and $_.CommandLine -notmatch 'claudecodebrowser_host' } | "
               "% { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
     run(["powershell", "-NoProfile", "-Command", script])
-    deadline = time.monotonic() + 90
-    while time.monotonic() < deadline:
-        time.sleep(3)
-        try:
-            with urllib.request.urlopen(HEALTH_URL, timeout=3) as resp:
-                print(f"Server back: {json.loads(resp.read())}")
-                return
-        except OSError:
-            pass
-    print("Server not back within 90 s. It starts with the next Claude Code session or Firefox start.")
+    time.sleep(3)
+    health = wait_for_server(90)
+    print(f"Server back: {health}" if health else
+          "Server not back within 90 s. It starts with the next Claude Code session or Firefox start.")
 
 
 def main():
@@ -153,6 +201,10 @@ def main():
     install(xpi, name, addon_id, version)
     if not args.extension_only:
         restart_server()
+    # Reloading the add-on restarts the native host and, with it, the server;
+    # the empty tab Firefox opened for the file can be closed once it is back.
+    if wait_for_server(60):
+        close_xpi_tabs()
 
 
 if __name__ == "__main__":

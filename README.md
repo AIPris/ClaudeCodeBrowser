@@ -216,6 +216,32 @@ them and you're current. **The browser extension is separate**: it runs
 inside Firefox and does not update from a `git pull`. How you update it
 depends on how it was installed.
 
+### One command, privately (Windows, self-signed add-on)
+
+```powershell
+python scripts\update_addon.py --bump
+```
+
+This updates the whole local install from the checkout, with nothing published:
+
+1. `--bump` raises the patch version (Mozilla signs each version only once).
+2. Copies the server, native host and agent files to `~\.claudecodebrowser`.
+3. Builds the add-on and signs it as an **unlisted** (private) add-on through
+   Mozilla's API (`scripts\sign_addon.py`; `web-ext sign` fails on Windows).
+   Put your API key in `.env.amo` (git-ignored):
+   `WEB_EXT_API_KEY=user:...` and `WEB_EXT_API_SECRET=...`, from
+   <https://addons.mozilla.org/developers/addon/api/key/>.
+4. Opens it in Firefox and presses **Add** on the install prompt by itself
+   (`scripts\confirm-addon-install.ps1`, Windows UI Automation). It only
+   presses a button in Firefox's own install popup whose title names this
+   add-on, never in a web page or another app.
+5. Restarts the MCP server and checks that Firefox reports the new version.
+
+`--extension-only` skips the server and native host files. Self-hosted
+auto-updates are not an option: Mozilla refuses to sign an add-on whose
+`update_url` is not HTTPS, and Firefox add-ons cannot trigger their own update
+check.
+
 Build a versioned package (both scripts also emit `dist/updates.json` for
 auto-update — see below):
 
