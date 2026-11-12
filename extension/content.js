@@ -332,6 +332,8 @@
     switch (message.action) {
       case "click":
         return performClick(message);
+      case "setFiles":
+        return setFiles(message);
       case "type":
         return performType(message);
       case "scroll":
@@ -658,6 +660,29 @@
     }
 
     return element;
+  }
+
+  // Put files on an <input type="file"> as if the user had picked them.
+  function setFiles(options) {
+    const input = findElement(options);
+    if (!input) {
+      throw new Error(`Element not found with options: ${JSON.stringify({ selector: options.selector })}`);
+    }
+    if (input.tagName !== 'INPUT' || input.type !== 'file') {
+      throw new Error(`${options.selector} is not an <input type="file">. Target the file input itself; ` +
+        'drop zones usually contain one, often hidden.');
+    }
+    if (options.files.length > 1 && !input.multiple) {
+      throw new Error(`${options.selector} takes one file (no multiple attribute), got ${options.files.length}.`);
+    }
+    const transfer = new DataTransfer();
+    for (const file of options.files) {
+      transfer.items.add(new File([file.bytes], file.name, { type: file.type || '' }));
+    }
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return { uploaded: input.files.length, names: Array.from(input.files, (f) => f.name) };
   }
 
   // Click functionality
