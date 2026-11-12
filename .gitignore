@@ -36,3 +36,6 @@ screenshots/
 
 # web-ext build/sign output
 web-ext-artifacts/
+
+# Test harness dependencies
+node_modules/
