@@ -31,5 +31,11 @@ Thumbs.db
 # Screenshots (user data)
 screenshots/
 
+# Mozilla add-ons signing credentials
+.env.amo
+
+# web-ext build/sign output
+web-ext-artifacts/
+
 # Test harness dependencies
 node_modules/

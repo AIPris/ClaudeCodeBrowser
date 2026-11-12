@@ -4,6 +4,7 @@
   "path": "/home/dre/.claudecodebrowser/native-host/claudecodebrowser_host.py",
   "type": "stdio",
   "allowed_extensions": [
+    "claudecodebrowser@aipris",
     "claudecodebrowser@ligandal.com"
   ]
 }
