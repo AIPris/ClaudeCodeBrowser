@@ -30,7 +30,8 @@ import sys
 import base64
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import mimetypes
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
@@ -301,6 +302,23 @@ MCP_TOOLS: List[MCPTool] = [
                 "limit": {"type": "integer", "default": 50, "description": "Max tabs to return."},
                 "url_pattern": {"type": "string", "description": "Regex to filter tabs by URL before applying limit."},
                 "include_favicon": {"type": "boolean", "default": False, "description": "Include favIconUrl (often a large base64 data URI) per tab."}
+            }
+        }
+    ),
+    MCPTool(
+        name="browser_upload_file",
+        description=("Attach local files to an <input type=\"file\"> (the input itself, even if hidden; "
+                     "drop zones usually have one). Fires input/change like a real file pick. Files must be "
+                     "inside upload_allowed_dirs from safety.json (default: the home folder); hidden files "
+                     "and folders are refused, and the total is capped by max_upload_mb."),
+        input_schema={
+            "type": "object",
+            "required": ["selector", "paths"],
+            "properties": {
+                "selector": {"type": "string", "description": "CSS selector of the <input type=\"file\">."},
+                "paths": {"type": "array", "items": {"type": "string"},
+                          "description": "Absolute local file paths. Several need an input with the multiple attribute."},
+                "tab_id": {"type": "integer", "description": "Optional tab ID."}
             }
         }
     ),
@@ -935,6 +953,36 @@ class BrowserConnectionManager:
 # Global connection manager
 connection_manager = BrowserConnectionManager()
 
+# Seconds a browser_upload_file URL stays valid.
+UPLOAD_URL_TTL = 120.0
+
+
+class UploadStore:
+    """Single-use, short-lived URLs from which the extension fetches the files
+    for browser_upload_file. Native messaging caps host-to-extension messages
+    at 1 MB, too small to carry photos or model files inside the command."""
+
+    def __init__(self):
+        self._files: Dict[str, Tuple[Path, float]] = {}
+        self._lock = threading.Lock()
+
+    def register(self, path: Path) -> str:
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._files[token] = (path, time.monotonic())
+        return token
+
+    def take(self, token: str) -> Optional[Path]:
+        """The file for a token, once; None if unknown, used or expired."""
+        with self._lock:
+            entry = self._files.pop(token, None)
+        if entry is None or time.monotonic() - entry[1] > UPLOAD_URL_TTL:
+            return None
+        return entry[0]
+
+
+upload_store = UploadStore()
+
 
 class MCPHTTPHandler(BaseHTTPRequestHandler):
     """HTTP request handler for MCP server."""
@@ -974,6 +1022,20 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
                 'browsers_connected': len(connection_manager.browser_connections),
                 **connection_manager.connection_info()
             })
+
+        elif parsed.path.startswith('/upload/'):
+            # No API key here on purpose: the extension doesn't have one. The
+            # random, single-use, short-lived token in the URL is the credential.
+            file_path = upload_store.take(parsed.path[len('/upload/'):])
+            if file_path is None:
+                self.send_json_response({'error': 'Not found'}, 404)
+            else:
+                body = file_path.read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type', mimetypes.guess_type(file_path.name)[0] or 'application/octet-stream')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
         elif not self._check_auth():
             self.send_json_response({'error': 'Unauthorized'}, 403)
@@ -1106,6 +1168,8 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
             return self._run_workflow(arguments)
         if tool_name == 'browser_audit_page':
             return self._audit_page(arguments)
+        if tool_name == 'browser_upload_file':
+            return self._upload_file(arguments)
 
         # Map tool names to actions
         tool_action_map = {
@@ -1461,6 +1525,24 @@ class MCPHTTPHandler(BaseHTTPRequestHandler):
   };
 })()
 """
+
+    def _upload_file(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """browser_upload_file: check the paths, then let the extension fetch each
+        file once from a short-lived URL and set it on the file input."""
+        paths, denial = get_safety_guard().check_upload_paths(arguments.get('paths'))
+        if denial is not None:
+            return denial
+        base = f'http://{HOST}:{HTTP_PORT}/upload/'
+        tokens = [upload_store.register(p) for p in paths]
+        files = [{'url': base + token, 'name': p.name,
+                  'type': mimetypes.guess_type(p.name)[0] or ''}
+                 for p, token in zip(paths, tokens)]
+        try:
+            return self._dispatch_action('uploadFile', arguments.get('tab_id'),
+                                         {'selector': arguments.get('selector'), 'files': files})
+        finally:
+            for token in tokens:  # revoke whatever the browser did not fetch
+                upload_store.take(token)
 
     def _audit_page(self, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Collect page structure + optional screenshot for visual critique."""

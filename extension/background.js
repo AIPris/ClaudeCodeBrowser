@@ -185,6 +185,9 @@ async function handleCommand(message) {
 
   try {
     switch (action) {
+      case "uploadFile":
+        result = await uploadFiles(tabId, data);
+        break;
       case "screenshot":
         result = await takeScreenshot(tabId, data);
         break;
@@ -507,6 +510,28 @@ async function sendToContentScript(tabId, message) {
   try {
     const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
     const result = await messageTopFrame(tab.id, message);
+    return { success: true, ...result };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// File upload: the server serves each file once from a short-lived URL
+// (native messaging caps host-to-extension messages at 1 MB). Fetch the bytes
+// here, where host permissions apply, and let the page's top frame set them
+// on the <input type="file">.
+async function uploadFiles(tabId, data) {
+  try {
+    const tab = tabId ? await browser.tabs.get(tabId) : (await browser.tabs.query({ active: true, currentWindow: true }))[0];
+    const files = [];
+    for (const file of data.files || []) {
+      const response = await fetch(file.url);
+      if (!response.ok) {
+        throw new Error(`Could not fetch ${file.name} from the server (HTTP ${response.status})`);
+      }
+      files.push({ name: file.name, type: file.type, bytes: await response.arrayBuffer() });
+    }
+    const result = await messageTopFrame(tab.id, { action: "setFiles", selector: data.selector, files });
     return { success: true, ...result };
   } catch (error) {
     return { success: false, error: error.message };

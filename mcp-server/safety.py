@@ -47,7 +47,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger('ClaudeCodeBrowser.Safety')
 
@@ -78,6 +78,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "allow_password_typing": False,
     "max_actions_per_minute": 120,
     "audit_log": True,
+    # browser_upload_file may only send files from these folders ("~" = home).
+    # Hidden files and folders (names starting with ".", e.g. ~/.ssh) are
+    # always refused, as is anything over max_upload_mb in total.
+    "upload_allowed_dirs": ["~"],
+    "max_upload_mb": 100,
     # Regexes matched against target URLs. Empty allowlist = allow everything
     # that is not blocked.
     "blocked_url_patterns": [],
@@ -214,6 +219,38 @@ class SafetyGuard:
                      'allowed' if denial is None else
                      denial.get('safety_decision', 'denied')))
         return denial
+
+    def check_upload_paths(self, paths: Any) -> Tuple[Optional[List[Path]], Optional[Dict[str, Any]]]:
+        """Resolve files for browser_upload_file. Returns (paths, None) or (None, denial).
+
+        A page could talk the agent into uploading secrets, so files must sit in
+        upload_allowed_dirs, outside hidden folders, and within max_upload_mb.
+        """
+        if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+            return None, self._deny('upload_invalid', 'paths must be a non-empty list of file paths.')
+        allowed = [Path(os.path.expanduser(d)).resolve() for d in self.config.get('upload_allowed_dirs', ['~'])]
+        resolved: List[Path] = []
+        for raw in paths:
+            path = Path(os.path.expanduser(raw)).resolve()
+            base = next((d for d in allowed if path == d or d in path.parents), None)
+            if base is None:
+                return None, self._deny('upload_outside_allowed',
+                                        f'{raw} is outside the upload folders {[str(d) for d in allowed]} '
+                                        f'(upload_allowed_dirs in safety.json).')
+            if any(part.startswith('.') for part in path.relative_to(base).parts):
+                return None, self._deny('upload_hidden', f'{raw} refused: hidden files and folders are never uploaded.')
+            if not path.exists():
+                return None, self._deny('upload_missing', f'{raw}: file not found.')
+            if not path.is_file():
+                return None, self._deny('upload_not_file', f'{raw} is not a file.')
+            resolved.append(path)
+        limit_mb = float(self.config.get('max_upload_mb', 100))
+        total = sum(p.stat().st_size for p in resolved)
+        if total > limit_mb * 1024 * 1024:
+            return None, self._deny('upload_too_large',
+                                    f'Files too large: {total / 1048576:.1f} MB in total, limit {limit_mb:g} MB '
+                                    f'(max_upload_mb in safety.json).')
+        return resolved, None
 
     def note_url(self, result: Dict[str, Any]):
         """Track the browser's current URL from a tool result, if it has one."""

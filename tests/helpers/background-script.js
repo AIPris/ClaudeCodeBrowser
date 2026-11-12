@@ -21,13 +21,14 @@ function withFallback(target) {
   return new Proxy(target, { get: (obj, key) => (key in obj ? obj[key] : noop()) });
 }
 
-function loadBackgroundScript(browserApi = {}) {
+function loadBackgroundScript(browserApi = {}, globals = {}) {
   const browser = new Proxy(browserApi, {
     get: (overrides, key) => (key in overrides ? withFallback(overrides[key]) : noop()),
   });
   const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
   const context = vm.createContext({
     browser, console: quiet, setTimeout, clearTimeout, setInterval, clearInterval,
+    ...globals, // e.g. a fake fetch
   });
   vm.runInContext(BACKGROUND_JS, context);
   return context; // top-level functions (takeScreenshot, ...) are globals here
