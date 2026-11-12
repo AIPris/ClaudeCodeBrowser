@@ -16,9 +16,14 @@ function noop() {
   });
 }
 
+// Overridden namespaces keep the no-op fallback for members a test doesn't set.
+function withFallback(target) {
+  return new Proxy(target, { get: (obj, key) => (key in obj ? obj[key] : noop()) });
+}
+
 function loadBackgroundScript(browserApi = {}) {
   const browser = new Proxy(browserApi, {
-    get: (overrides, key) => (key in overrides ? overrides[key] : noop()),
+    get: (overrides, key) => (key in overrides ? withFallback(overrides[key]) : noop()),
   });
   const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
   const context = vm.createContext({
