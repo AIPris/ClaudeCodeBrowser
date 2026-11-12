@@ -73,6 +73,7 @@ def start_http_server():
     log(f"Starting HTTP server: {server_script}")
     server_process = subprocess.Popen(
         [sys.executable, str(server_script)],
+        stdin=subprocess.DEVNULL,  # not our stdin, the MCP pipe (see issue #26)
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True
